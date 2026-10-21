@@ -29,8 +29,11 @@ def load_checkpoint(path: Path, device: torch.device):
     return model, src_vocab, tgt_vocab, ns
 
 
-def encode_source(sentence: str, src_vocab: Vocab, device: torch.device):
-    ids = src_vocab.encode(tokenize(sentence.lower()))
+def encode_source(sentence: str, src_vocab: Vocab, device: torch.device, lowercase: bool = True):
+    # The bundled TSV corpus is lowercased; WMT14 keeps original casing.
+    if lowercase:
+        sentence = sentence.lower()
+    ids = src_vocab.encode(tokenize(sentence))
     tensor = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
     lengths = torch.tensor([len(ids)], dtype=torch.long, device=device)
     return tensor, lengths
@@ -44,8 +47,8 @@ def detokenize(text: str) -> str:
     )
 
 
-def translate_sentence(model, src_vocab, tgt_vocab, sentence: str, max_len: int, device):
-    src, lengths = encode_source(sentence, src_vocab, device)
+def translate_sentence(model, src_vocab, tgt_vocab, sentence: str, max_len: int, device, lowercase: bool = True):
+    src, lengths = encode_source(sentence, src_vocab, device, lowercase)
     pred_ids = model.translate(src, lengths, max_len=max_len, eos_idx=EOS)
     return detokenize(tgt_vocab.decode(pred_ids[0].tolist()))
 
@@ -69,7 +72,10 @@ def main():
     ]
     print(f"loaded {args.ckpt} on {device}")
     for sentence in sentences:
-        french = translate_sentence(model, src_vocab, tgt_vocab, sentence, ns.max_len, device)
+        french = translate_sentence(
+            model, src_vocab, tgt_vocab, sentence, ns.max_len, device,
+            lowercase=not getattr(ns, "wmt14", False),
+        )
         print(f"{sentence}  →  {french}")
 
 

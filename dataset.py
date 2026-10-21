@@ -50,7 +50,7 @@ def load_tsv_pairs(path: Path) -> List[Tuple[List[str], List[str]]]:
 def load_wmt14(max_pairs: int, max_len: int) -> List[Tuple[List[str], List[str]]]:
     from datasets import load_dataset
 
-    raw = load_dataset("wmt14", "fr-en", split="train")
+    raw = load_dataset("wmt/wmt14", "fr-en", split="train", streaming=True)
     pairs = []
     for row in raw:
         src_toks = tokenize(row["translation"]["en"])
