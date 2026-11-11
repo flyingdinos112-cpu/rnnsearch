@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from dataset import EOS, PAD, SOS, prepare_data
 from rnnenc50 import Decoder, Encoder, RNNenc50
+from rnnsearch50 import AttnDecoder, BiEncoder, RNNsearch50, init_paper_weights
 
 
 def parse_args():
@@ -25,14 +26,20 @@ def parse_args():
     p.add_argument("--embed-dim", type=int, default=128)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--maxout-dim", type=int, default=128)
+    p.add_argument("--model", choices=("rnnenc", "rnnsearch"), default="rnnenc",
+                   help="rnnenc = RNNencdec baseline; rnnsearch = bidirectional encoder + attention.")
+    p.add_argument("--align-dim", type=int, default=None, help="RNNsearch alignment units n' (default: hidden dim).")
     p.add_argument("--vocab-size", type=int, default=8000)
     p.add_argument("--max-len", type=int, default=20)
     p.add_argument("--teacher-forcing", type=float, default=0.5)
     p.add_argument("--clip", type=float, default=1.0)
-    p.add_argument("--save", type=Path, default=Path("checkpoints/rnnenc50.pt"))
+    p.add_argument("--save", type=Path, default=None,
+                   help="Default: checkpoints/rnnenc50.pt or checkpoints/rnnsearch50.pt")
     p.add_argument("--paper", action="store_true", help="Use paper hyperparameters (very large).")
     p.add_argument("--wmt14", action="store_true")
     p.add_argument("--wmt-max-pairs", type=int, default=50_000)
+    p.add_argument("--opus100-max-pairs", type=int, default=0, help="Mix in OPUS-100 en-fr (with --wmt14).")
+    p.add_argument("--phrasebook-repeat", type=int, default=0, help="Add data/en_fr_pairs.tsv N times (with --wmt14).")
     p.add_argument("--val-ratio", type=float, default=0.0)
     return p.parse_args()
 
@@ -44,10 +51,19 @@ def apply_paper_hparams(args):
     args.vocab_size = 30000
     args.max_len = 50
     args.batch_size = 80
+    args.align_dim = 1000  # n' (Appendix A.2.3)
     return args
 
 
-def build_model(src_vocab_size, tgt_vocab_size, args, device):
+def build_model(src_vocab_size, tgt_vocab_size, args, device, init_weights: bool = False):
+    if getattr(args, "model", "rnnenc") == "rnnsearch":
+        align_dim = getattr(args, "align_dim", None) or args.hidden_dim
+        encoder = BiEncoder(src_vocab_size, args.embed_dim, args.hidden_dim, PAD)
+        decoder = AttnDecoder(tgt_vocab_size, args.embed_dim, args.hidden_dim, args.maxout_dim, align_dim, PAD)
+        model = RNNsearch50(encoder, decoder, device, SOS)
+        if init_weights:
+            init_paper_weights(model)
+        return model.to(device)
     encoder = Encoder(src_vocab_size, args.embed_dim, args.hidden_dim, PAD)
     decoder = Decoder(tgt_vocab_size, args.embed_dim, args.hidden_dim, args.maxout_dim, PAD)
     return RNNenc50(encoder, decoder, device, SOS).to(device)
@@ -71,6 +87,8 @@ def main():
     args = parse_args()
     if args.paper:
         apply_paper_hparams(args)
+    if args.save is None:
+        args.save = Path(f"checkpoints/{args.model}50.pt")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     src_vocab, tgt_vocab, train_loader, val_loader = prepare_data(
@@ -79,15 +97,17 @@ def main():
         batch_size=args.batch_size,
         use_wmt14=args.wmt14,
         wmt_max_pairs=args.wmt_max_pairs,
+        opus100_max_pairs=args.opus100_max_pairs,
+        phrasebook_repeat=args.phrasebook_repeat,
         val_ratio=args.val_ratio,
     )
-    model = build_model(len(src_vocab), len(tgt_vocab), args, device)
+    model = build_model(len(src_vocab), len(tgt_vocab), args, device, init_weights=True)
     criterion = nn.CrossEntropyLoss(ignore_index=PAD)
     # Paper: Adadelta with ε=1e-6, ρ=0.95
     optimizer = torch.optim.Adadelta(model.parameters(), eps=1e-6, rho=0.95)
 
     print(
-        f"device={device}  train_batches={len(train_loader)}  "
+        f"model={args.model}  device={device}  train_batches={len(train_loader)}  "
         f"src_vocab={len(src_vocab)}  tgt_vocab={len(tgt_vocab)}  "
         f"params={sum(p.numel() for p in model.parameters()):,}"
     )

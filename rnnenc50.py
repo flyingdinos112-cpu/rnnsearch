@@ -103,7 +103,7 @@ class RNNenc50(nn.Module):
         for t in range(1, trg_len):
             prediction, hidden = self.decoder(input_token, hidden, context)
             outputs[:, t] = prediction
-            if self.training and torch.rand(1).item() < teacher_forcing_ratio:
+            if torch.rand(1).item() < teacher_forcing_ratio:
                 input_token = target[:, t].unsqueeze(1)
             else:
                 input_token = prediction.argmax(1, keepdim=True)
@@ -132,3 +132,17 @@ class RNNenc50(nn.Module):
             if (input_token.squeeze(1) == eos_idx).all():
                 break
         return torch.cat(tokens, dim=1)
+
+    # --- interface used by beam_search.py -------------------------------
+    def beam_init(self, source, source_lengths):
+        context = self.encoder(source, source_lengths)
+        return self.decoder.init_hidden(context), context
+
+    def beam_step(self, tokens, state):
+        hidden, context = state
+        prediction, hidden = self.decoder(tokens, hidden, context)
+        return prediction, (hidden, context)
+
+    @staticmethod
+    def beam_reorder(state, index):
+        return tuple(x.index_select(1, index) for x in state)  # (1, batch, n) tensors

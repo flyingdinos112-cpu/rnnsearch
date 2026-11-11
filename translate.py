@@ -1,12 +1,17 @@
-"""Greedy English→French decoding with a trained RNNenc50 checkpoint."""
+"""English→French translation with a trained RNNenc50 or RNNsearch50 checkpoint.
+
+Uses beam search by default, as in the paper; --beam-size 1 gives greedy decoding.
+"""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 
+from beam_search import beam_search
 from dataset import EOS, Vocab, tokenize
 from train import build_model
 
@@ -47,15 +52,24 @@ def detokenize(text: str) -> str:
     )
 
 
-def translate_sentence(model, src_vocab, tgt_vocab, sentence: str, max_len: int, device, lowercase: bool = True):
+def translate_sentence(
+    model, src_vocab, tgt_vocab, sentence: str, max_len: int, device,
+    lowercase: bool = True, beam_size: int = 10,
+):
     src, lengths = encode_source(sentence, src_vocab, device, lowercase)
-    pred_ids = model.translate(src, lengths, max_len=max_len, eos_idx=EOS)
-    return detokenize(tgt_vocab.decode(pred_ids[0].tolist()))
+    if beam_size > 1:
+        pred_ids = beam_search(model, src, lengths, beam_size, max_len, EOS)
+    else:
+        pred_ids = model.translate(src, lengths, max_len=max_len, eos_idx=EOS)[0].tolist()
+    return detokenize(tgt_vocab.decode(pred_ids))
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")  # Windows consoles default to cp1252
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=Path, default=Path("checkpoints/rnnenc50.pt"))
+    parser.add_argument("--beam-size", type=int, default=10,
+                        help="Beam width (the paper does not state one); 1 = greedy.")
     parser.add_argument("sentences", nargs="*", help="English sentences to translate")
     args = parser.parse_args()
 
@@ -70,11 +84,11 @@ def main():
         "thank you",
         "i am a student",
     ]
-    print(f"loaded {args.ckpt} on {device}")
+    print(f"loaded {args.ckpt} ({getattr(ns, 'model', 'rnnenc')}) on {device}  beam={args.beam_size}")
     for sentence in sentences:
         french = translate_sentence(
             model, src_vocab, tgt_vocab, sentence, ns.max_len, device,
-            lowercase=not getattr(ns, "wmt14", False),
+            lowercase=not getattr(ns, "wmt14", False), beam_size=args.beam_size,
         )
         print(f"{sentence}  →  {french}")
 

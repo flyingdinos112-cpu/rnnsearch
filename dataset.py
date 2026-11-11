@@ -47,10 +47,13 @@ def load_tsv_pairs(path: Path) -> List[Tuple[List[str], List[str]]]:
     return pairs
 
 
-def load_wmt14(max_pairs: int, max_len: int) -> List[Tuple[List[str], List[str]]]:
+def load_wmt14(max_pairs: int, max_len: int, seed: int = 42) -> List[Tuple[List[str], List[str]]]:
     from datasets import load_dataset
 
     raw = load_dataset("wmt/wmt14", "fr-en", split="train", streaming=True)
+    # Stored order starts with Europarl; shuffle shards + a buffer so the first
+    # max_pairs also cover Common Crawl, News Commentary and UN text.
+    raw = raw.shuffle(seed=seed, buffer_size=10_000)
     pairs = []
     for row in raw:
         src_toks = tokenize(row["translation"]["en"])
@@ -59,6 +62,33 @@ def load_wmt14(max_pairs: int, max_len: int) -> List[Tuple[List[str], List[str]]
             pairs.append((src_toks, tgt_toks))
         if len(pairs) >= max_pairs:
             break
+    return pairs
+
+
+def load_opus100(max_pairs: int, max_len: int) -> List[Tuple[List[str], List[str]]]:
+    """OPUS-100 en–fr: mixed domains incl. subtitles, so everyday words appear."""
+    from datasets import load_dataset
+
+    raw = load_dataset("Helsinki-NLP/opus-100", "en-fr", split="train", streaming=True)
+    pairs = []
+    for row in raw:
+        en, fr = row["translation"]["en"], row["translation"]["fr"]
+        if en.strip() == fr.strip():  # untranslated copies are common in OPUS
+            continue
+        src_toks, tgt_toks = tokenize(en), tokenize(fr)
+        if 1 <= len(src_toks) <= max_len and 1 <= len(tgt_toks) <= max_len:
+            pairs.append((src_toks, tgt_toks))
+        if len(pairs) >= max_pairs:
+            break
+    return pairs
+
+
+def load_phrasebook_cased(path: Path) -> List[Tuple[List[str], List[str]]]:
+    """Bundled phrases for a cased corpus: lowercase and sentence-cased copies."""
+    pairs = []
+    for src, tgt in load_tsv_pairs(path):
+        pairs.append((src, tgt))
+        pairs.append(([src[0].capitalize()] + src[1:], [tgt[0].capitalize()] + tgt[1:]))
     return pairs
 
 
@@ -134,9 +164,13 @@ def prepare_data(
     seed: int = 42,
     use_wmt14: bool = False,
     wmt_max_pairs: int = 50_000,
+    opus100_max_pairs: int = 0,
+    phrasebook_repeat: int = 0,
 ):
     if use_wmt14:
-        pairs = load_wmt14(wmt_max_pairs, max_len)
+        pairs = load_wmt14(wmt_max_pairs, max_len, seed)
+        if opus100_max_pairs:
+            pairs += load_opus100(opus100_max_pairs, max_len)
     else:
         pairs = load_tsv_pairs(DATA_FILE)
         pairs = [(s, t) for s, t in pairs if len(s) <= max_len and len(t) <= max_len]
@@ -147,6 +181,9 @@ def prepare_data(
     val_pairs, train_pairs = pairs[:n_val], pairs[n_val:]
     if not train_pairs:
         train_pairs, val_pairs = pairs, []
+    if use_wmt14 and phrasebook_repeat:
+        # Train-only: guarantees greetings/basics are in-vocab and seen often.
+        train_pairs += load_phrasebook_cased(DATA_FILE) * phrasebook_repeat
     src_vocab, tgt_vocab = build_vocabs(train_pairs, vocab_size)
 
     train_ds = ParallelDataset(train_pairs, src_vocab, tgt_vocab, max_len)
