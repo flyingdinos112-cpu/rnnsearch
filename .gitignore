@@ -4,3 +4,5 @@ __pycache__/
 # Trained weights are 250+ MB each, over GitHub's 100 MB file limit
 checkpoints/
 *.pt
+# Model output from test_bleu.py (regenerated each run)
+*.hyp.tsv

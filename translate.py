@@ -44,12 +44,45 @@ def encode_source(sentence: str, src_vocab: Vocab, device: torch.device, lowerca
     return tensor, lengths
 
 
+ATTACH_LEFT = {".", ",", ")", "]", "}", "…"}   # no space before: "mot ." -> "mot."
+ATTACH_RIGHT = {"(", "[", "{"}                 # no space after:  "( mot" -> "(mot"
+JOIN_BOTH = {"'", "’", "/"}                    # "l ' hôtel" -> "l'hôtel"
+# French keeps a space before ; : ! ? % and inside « », so those are left alone.
+
+
 def detokenize(text: str) -> str:
-    return (
-        text.replace(" ' ", "'")
-        .replace(" ' ", "'")
-        .replace(" - ", "-")
-    )
+    """Undo dataset.tokenize, which splits every punctuation mark into its own token."""
+    tokens = text.split()
+    out = ""
+    glue_next = True  # no space before the first token
+    quote_open = False
+    for i, tok in enumerate(tokens):
+        prev = tokens[i - 1] if i else ""
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        glue = glue_next
+        glue_next = False
+
+        if tok in ATTACH_LEFT or tok in JOIN_BOTH:
+            glue = True
+        if tok in ATTACH_RIGHT or tok in JOIN_BOTH:
+            glue_next = True
+        if tok == "-":
+            if i == 0:  # dialogue dash: "- Bonjour"
+                pass
+            elif prev == "-" or (prev[-1:].isalnum() and nxt[:1].isalnum()) or nxt == "-":
+                glue = True  # "non - discrimination" -> "non-discrimination", "- -" -> "--"
+                glue_next = nxt != "" and nxt != "-"
+        if tok in {".", ","} and prev.isdigit() and nxt.isdigit():
+            glue = glue_next = True  # "1 , 5" -> "1,5"
+        if tok == '"':
+            if quote_open:
+                glue = True
+            else:
+                glue_next = True
+            quote_open = not quote_open
+
+        out += tok if glue else " " + tok
+    return out
 
 
 def translate_sentence(
